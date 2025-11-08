@@ -389,45 +389,56 @@ def monitor_forum_log():
             for line in existing_lines:
                 line_hash = hash(line.strip())
                 processed_lines.add(line_hash)
-            last_position = f.tell()
+            # 使用文件大小而不是tell()，因为tell()在文本模式下可能不准确
+            last_position = forum_log_file.stat().st_size
     
     while True:
         try:
             if forum_log_file.exists():
-                with open(forum_log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    f.seek(last_position)
-                    new_lines = f.readlines()
-                    
-                    if new_lines:
-                        for line in new_lines:
-                            line = line.rstrip('\n\r')
-                            if line.strip():
-                                line_hash = hash(line.strip())
-                                
-                                # 避免重复处理同一行
-                                if line_hash in processed_lines:
-                                    continue
-                                
-                                processed_lines.add(line_hash)
-                                
-                                # 解析日志行并发送forum消息
-                                parsed_message = parse_forum_log_line(line)
-                                if parsed_message:
-                                    socketio.emit('forum_message', parsed_message)
-                                
-                                # 只有在控制台显示forum时才发送控制台消息
-                                timestamp = datetime.now().strftime('%H:%M:%S')
-                                formatted_line = f"[{timestamp}] {line}"
-                                socketio.emit('console_output', {
-                                    'app': 'forum',
-                                    'line': formatted_line
-                                })
+                current_size = forum_log_file.stat().st_size
+                
+                # 如果文件被截断或重置，从头开始
+                if current_size < last_position:
+                    last_position = 0
+                    processed_lines.clear()
+                
+                # 如果有新内容
+                if current_size > last_position:
+                    with open(forum_log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        f.seek(last_position)
+                        new_lines = f.readlines()
                         
-                        last_position = f.tell()
-                        
-                        # 清理processed_lines集合，避免内存泄漏（保留最近1000行的哈希）
-                        if len(processed_lines) > 1000:
-                            processed_lines.clear()
+                        if new_lines:
+                            for line in new_lines:
+                                line = line.rstrip('\n\r')
+                                if line.strip():
+                                    line_hash = hash(line.strip())
+                                    
+                                    # 避免重复处理同一行
+                                    if line_hash in processed_lines:
+                                        continue
+                                    
+                                    processed_lines.add(line_hash)
+                                    
+                                    # 解析日志行并发送forum消息
+                                    parsed_message = parse_forum_log_line(line)
+                                    if parsed_message:
+                                        socketio.emit('forum_message', parsed_message)
+                                    
+                                    # 只有在控制台显示forum时才发送控制台消息
+                                    timestamp = datetime.now().strftime('%H:%M:%S')
+                                    formatted_line = f"[{timestamp}] {line}"
+                                    socketio.emit('console_output', {
+                                        'app': 'forum',
+                                        'line': formatted_line
+                                    })
+                            
+                            # 更新位置为当前文件大小
+                            last_position = forum_log_file.stat().st_size
+                
+                # 清理processed_lines集合，避免内存泄漏（保留最近1000行的哈希）
+                if len(processed_lines) > 1000:
+                    processed_lines.clear()
             
             time.sleep(1)  # 每秒检查一次
         except Exception as e:
@@ -555,7 +566,7 @@ def read_process_output(process, app_name):
                             
         except Exception as e:
             logger.exception(f"Error reading output for {app_name}: {e}")
-            write_log_to_file(app_name, f"[{datetime.now().strftime('%H:%M:%S')}] {error_msg}")
+            write_log_to_file(app_name, f"[{datetime.now().strftime('%H:%M:%S')}] Error: {str(e)}")
             break
 
 def start_streamlit_app(app_name, script_path, port):
@@ -660,17 +671,21 @@ def check_app_status():
     for app_name, info in processes.items():
         if info['process'] is not None:
             if info['process'].poll() is None:
-                # 进程仍在运行，检查端口是否可访问
-                try:
-                    response = requests.get(f"http://localhost:{info['port']}", timeout=2)
-                    if response.status_code == 200:
-                        info['status'] = 'running'
-                    else:
+                # 进程仍在运行，检查端口是否可访问（forum应用没有端口）
+                if info['port'] is not None:
+                    try:
+                        response = requests.get(f"http://localhost:{info['port']}", timeout=2)
+                        if response.status_code == 200:
+                            info['status'] = 'running'
+                        else:
+                            info['status'] = 'starting'
+                    except requests.exceptions.RequestException:
                         info['status'] = 'starting'
-                except requests.exceptions.RequestException:
-                    info['status'] = 'starting'
-                except Exception:
-                    info['status'] = 'starting'
+                    except Exception:
+                        info['status'] = 'starting'
+                else:
+                    # forum应用没有端口，直接标记为running
+                    info['status'] = 'running'
             else:
                 # 进程已结束
                 info['process'] = None
