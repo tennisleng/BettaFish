@@ -708,7 +708,7 @@ def wait_for_app_startup(app_name, max_wait_time=30):
             if response.status_code == 200:
                 info['status'] = 'running'
                 return True, "启动成功"
-        except:
+        except Exception:
             pass
         
         time.sleep(1)
